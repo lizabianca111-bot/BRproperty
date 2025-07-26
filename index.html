@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bottom Rate Property</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .loading-spinner {
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid #dc2626;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .mobile-card {
+            display: none;
+        }
+        @media (max-width: 768px) {
+            .desktop-table { display: none; }
+            .mobile-card { display: block; }
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-red-50 to-rose-100 min-h-screen">
+    <div class="container mx-auto px-2 sm:px-4 py-4 sm:py-8">
+        <!-- Header -->
+        <div class="text-center mb-6">
+            <h1 class="text-2xl sm:text-4xl font-bold text-red-800 mb-2">BOTTOM RATE PROPERTY</h1>
+            <p class="text-sm sm:text-base text-red-600">Daftar harga property terbaik</p>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loading" class="flex flex-col items-center justify-center py-12">
+            <div class="loading-spinner mb-4"></div>
+            <p class="text-gray-600">Memuat data dari Google Sheet...</p>
+        </div>
+
+        <!-- Error State -->
+        <div id="error" class="hidden bg-red-50 border border-red-200 rounded-lg p-6 mb-6">
+            <div class="flex items-center">
+                <div class="text-red-500 mr-3">⚠️</div>
+                <div>
+                    <h3 class="text-red-800 font-semibold">Gagal memuat data</h3>
+                    <p class="text-red-600 text-sm mt-1">Pastikan Google Sheet dapat diakses publik dan format URL benar.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div id="controls" class="hidden bg-white rounded-xl shadow-lg p-3 sm:p-6 mb-4 sm:mb-6 border border-red-100">
+            <div class="space-y-3 sm:space-y-0 sm:grid sm:grid-cols-2 lg:grid-cols-3 sm:gap-4">
+                <!-- Search -->
+                <div class="sm:col-span-2 lg:col-span-1">
+                    <label class="block text-xs sm:text-sm font-medium text-gray-700 mb-1 sm:mb-2">Cari Property</label>
+                    <input type="text" id="searchInput" placeholder="Cari nama, kota, tipe..." 
+                           class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                </div>
+                
+                <!-- Column Filter -->
+                <div>
+                    <label class="block text-xs sm:text-sm font-medium text-gray-700 mb-1 sm:mb-2">Filter</label>
+                    <select id="columnFilter" class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                        <option value="">Semua</option>
+                    </select>
+                </div>
+
+                <!-- Sort -->
+                <div>
+                    <label class="block text-xs sm:text-sm font-medium text-gray-700 mb-1 sm:mb-2">Urutkan</label>
+                    <select id="sortSelect" class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent">
+                        <option value="">Default</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Results Count -->
+            <div class="mt-3 text-xs sm:text-sm text-gray-600">
+                <span id="resultCount">0</span> dari <span id="totalCount">0</span> property
+            </div>
+        </div>
+
+        <!-- Data Table - Desktop -->
+        <div id="dataContainer" class="hidden">
+            <div class="desktop-table bg-white rounded-xl shadow-lg overflow-hidden border border-red-100">
+                <div class="overflow-x-auto">
+                    <table class="w-full">
+                        <thead id="tableHead" class="bg-gray-50">
+                            <!-- Headers will be populated dynamically -->
+                        </thead>
+                        <tbody id="tableBody">
+                            <!-- Data will be populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Mobile Cards -->
+            <div id="mobileCards" class="mobile-card space-y-3">
+                <!-- Cards will be populated dynamically -->
+            </div>
+        </div>
+
+        <!-- No Results -->
+        <div id="noResults" class="hidden text-center py-12">
+            <div class="text-gray-400 text-6xl mb-4">🔍</div>
+            <h3 class="text-xl font-semibold text-gray-600 mb-2">Tidak ada data ditemukan</h3>
+            <p class="text-gray-500">Coba ubah filter atau kata kunci pencarian</p>
+        </div>
+    </div>
+
+    <script>
+        let allData = [];
+        let filteredData = [];
+        let headers = [];
+        let searchCache = new Map();
+        let searchTimeout = null;
+        let isSearching = false;
+
+        // Convert Google Sheets URL to CSV format
+        function convertToCSVUrl(url) {
+            // Extract the spreadsheet ID from the published URL
+            const match = url.match(/2PACX-[a-zA-Z0-9-_]+/);
+            if (match) {
+                const publishedId = match[0];
+                return `https://docs.google.com/spreadsheets/d/e/${publishedId}/pub?output=csv&gid=0`;
+            }
+            return null;
+        }
+
+        // Parse CSV data
+        function parseCSV(text) {
+            const lines = text.split('\n');
+            const result = [];
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (line) {
+                    // Enhanced CSV parsing to handle decimal numbers properly
+                    const cells = [];
+                    let currentCell = '';
+                    let inQuotes = false;
+                    
+                    for (let j = 0; j < line.length; j++) {
+                        const char = line[j];
+                        
+                        if (char === '"') {
+                            inQuotes = !inQuotes;
+                        } else if (char === ',' && !inQuotes) {
+                            cells.push(currentCell.trim());
+                            currentCell = '';
+                        } else {
+                            currentCell += char;
+                        }
+                    }
+                    
+                    // Add the last cell
+                    cells.push(currentCell.trim());
+                    
+                    // Clean up cells and handle decimal numbers
+                    const cleanedRow = cells.map(cell => {
+                        // Remove quotes
+                        cell = cell.replace(/^"|"$/g, '');
+                        
+                        // If it looks like a decimal number with comma, convert to dot
+                        if (/^\d+,\d+$/.test(cell)) {
+                            cell = cell.replace(',', '.');
+                        }
+                        
+                        return cell.trim();
+                    });
+                    
+                    result.push(cleanedRow);
+                }
+            }
+            
+            return result;
+        }
+
+        // Load data from Google Sheets
+        async function loadData() {
+            try {
+                const originalUrl = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQkTNKqFvLQ44YbdhaUUNOeZhHkwcPe6moLytIhFevU0cV7gF8ZsseaduncYQZvHg_EHUnrpa2gD35p/pubhtml?gid=0&single=true';
+                
+                // Try multiple methods to get the data
+                let text = '';
+                let success = false;
+
+                // Method 1: Try CSV export
+                try {
+                    const csvUrl = convertToCSVUrl(originalUrl);
+                    if (csvUrl) {
+                        const response = await fetch(csvUrl);
+                        if (response.ok) {
+                            text = await response.text();
+                            success = true;
+                        }
+                    }
+                } catch (e) {
+                    console.log('CSV method failed, trying alternative...');
+                }
+
+                // Method 2: Try direct published URL with different format
+                if (!success) {
+                    try {
+                        const altUrl = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQkTNKqFvLQ44YbdhaUUNOeZhHkwcPe6moLytIhFevU0cV7gF8ZsseaduncYQZvHg_EHUnrpa2gD35p/pub?output=csv&gid=0';
+                        const response = await fetch(altUrl);
+                        if (response.ok) {
+                            text = await response.text();
+                            success = true;
+                        }
+                    } catch (e) {
+                        console.log('Alternative method failed...');
+                    }
+                }
+
+                // Method 3: Use CORS proxy as fallback
+                if (!success) {
+                    try {
+                        const proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent('https://docs.google.com/spreadsheets/d/e/2PACX-1vQkTNKqFvLQ44YbdhaUUNOeZhHkwcPe6moLytIhFevU0cV7gF8ZsseaduncYQZvHg_EHUnrpa2gD35p/pub?output=csv&gid=0');
+                        const response = await fetch(proxyUrl);
+                        if (response.ok) {
+                            const data = await response.json();
+                            text = data.contents;
+                            success = true;
+                        }
+                    } catch (e) {
+                        console.log('Proxy method failed...');
+                    }
+                }
+
+                if (!success || !text) {
+                    throw new Error('Unable to fetch data from Google Sheets');
+                }
+                
+                const rows = parseCSV(text);
+                
+                if (rows.length === 0) {
+                    throw new Error('No data found');
+                }
+
+                // First row is headers, data starts from second row
+                headers = rows[0];
+                allData = rows.slice(1).filter(row => row.some(cell => cell.trim() !== ''));
+                filteredData = [...allData];
+
+                setupUI();
+                renderTable();
+                updateCounts();
+
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('controls').classList.remove('hidden');
+                document.getElementById('dataContainer').classList.remove('hidden');
+
+            } catch (error) {
+                console.error('Error loading data:', error);
+                
+                // Show sample data as fallback
+                console.log('Loading sample data...');
+                const sampleData = [
+                    ['NAMA PROPERTY', 'SEGMENT', 'KOTA', 'TIPE KAMAR', 'WEEKDAY', 'WEEKEND'],
+                    ['The Lavana Sasandu Gunung Salak Bogor', 'Villa', 'Bogor', 'Villa', '1200', '1800'],
+                    ['The Lavana Villa Marwah Puncak', 'Villa', 'Puncak', 'Villa', '1500', '2500'],
+                    ['Habieb Homestay Syariah near Fakultas Kedokteran Universitas Malikussaleh RedPartner', 'Homestay', 'Aceh', 'Standard', '150', '177.5'],
+                    ['Hotel Santika Jakarta', 'Business', 'Jakarta', 'Superior', '450', '550'],
+                    ['Aston Bogor', 'Business', 'Bogor', 'Deluxe', '380', '480'],
+                    ['Swiss-Belhotel Bandung', 'Upscale', 'Bandung', 'Executive', '520', '620'],
+                    ['Mercure Surabaya', 'Upscale', 'Surabaya', 'Superior', '420', '520'],
+                    ['Ibis Yogyakarta', 'Economy', 'Yogyakarta', 'Standard', '280', '350'],
+                    ['Novotel Semarang', 'Upscale', 'Semarang', 'Deluxe', '480', '580']
+                ];
+                
+                headers = sampleData[0];
+                allData = sampleData.slice(1);
+                filteredData = [...allData];
+
+                setupUI();
+                renderTable();
+                updateCounts();
+
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('controls').classList.remove('hidden');
+                document.getElementById('dataContainer').classList.remove('hidden');
+                
+                // Show warning about sample data
+                const errorDiv = document.getElementById('error');
+                errorDiv.querySelector('h3').textContent = 'Menggunakan Data Contoh';
+                errorDiv.querySelector('p').textContent = 'Tidak dapat mengakses Google Sheet. Menampilkan data contoh. Pastikan sheet sudah dipublikasi dengan benar.';
+                errorDiv.classList.remove('hidden');
+            }
+        }
+
+        // Setup UI elements
+        function setupUI() {
+            // Populate column filter
+            const columnFilter = document.getElementById('columnFilter');
+            headers.forEach((header, index) => {
+                const option = document.createElement('option');
+                option.value = index;
+                option.textContent = header;
+                columnFilter.appendChild(option);
+            });
+
+            // Populate sort options
+            const sortSelect = document.getElementById('sortSelect');
+            headers.forEach((header, index) => {
+                const option = document.createElement('option');
+                option.value = index;
+                option.textContent = `${header} (A-Z)`;
+                sortSelect.appendChild(option);
+                
+                const optionDesc = document.createElement('option');
+                optionDesc.value = `${index}-desc`;
+                optionDesc.textContent = `${header} (Z-A)`;
+                sortSelect.appendChild(optionDesc);
+            });
+
+            // Add event listeners with optimizations
+            const searchInput = document.getElementById('searchInput');
+            
+            // Add instant feedback for search
+            searchInput.addEventListener('input', (e) => {
+                // Show immediate feedback
+                const value = e.target.value;
+                if (value.length > 0) {
+                    e.target.style.borderColor = '#dc2626';
+                    e.target.style.boxShadow = '0 0 0 1px #dc2626';
+                } else {
+                    e.target.style.borderColor = '';
+                    e.target.style.boxShadow = '';
+                }
+                
+                filterData();
+            });
+            
+            // Optimize other filters
+            document.getElementById('columnFilter').addEventListener('change', () => {
+                searchCache.clear(); // Clear cache when filter changes
+                filterData();
+            });
+            
+            document.getElementById('sortSelect').addEventListener('change', sortData);
+        }
+
+        // Fast filter with debouncing and caching
+        function filterData() {
+            // Clear previous timeout
+            if (searchTimeout) {
+                clearTimeout(searchTimeout);
+            }
+
+            // Debounce search to avoid too many calls
+            searchTimeout = setTimeout(() => {
+                performSearch();
+            }, 150); // 150ms delay
+        }
+
+        function performSearch() {
+            if (isSearching) return;
+            isSearching = true;
+
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase().trim();
+            const columnIndex = document.getElementById('columnFilter').value;
+            const cacheKey = `${searchTerm}_${columnIndex}`;
+
+            // Check cache first
+            if (searchCache.has(cacheKey)) {
+                filteredData = searchCache.get(cacheKey);
+                isSearching = false;
+                sortData();
+                return;
+            }
+
+            // Show loading indicator for search
+            const searchInput = document.getElementById('searchInput');
+            const originalPlaceholder = searchInput.placeholder;
+            searchInput.placeholder = 'Mencari...';
+            searchInput.style.backgroundColor = '#fef2f2';
+
+            // Use requestAnimationFrame for smooth UI
+            requestAnimationFrame(() => {
+                try {
+                    if (searchTerm === '') {
+                        filteredData = [...allData];
+                    } else {
+                        filteredData = allData.filter(row => {
+                            if (columnIndex === '') {
+                                // Search in all columns with early exit
+                                for (let i = 0; i < row.length; i++) {
+                                    if (row[i] && row[i].toLowerCase().includes(searchTerm)) {
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            } else {
+                                // Search in specific column
+                                const cell = row[parseInt(columnIndex)];
+                                return cell && cell.toLowerCase().includes(searchTerm);
+                            }
+                        });
+                    }
+
+                    // Cache the result
+                    searchCache.set(cacheKey, [...filteredData]);
+
+                    // Limit cache size to prevent memory issues
+                    if (searchCache.size > 50) {
+                        const firstKey = searchCache.keys().next().value;
+                        searchCache.delete(firstKey);
+                    }
+
+                } catch (error) {
+                    console.error('Search error:', error);
+                    filteredData = [...allData];
+                } finally {
+                    // Reset search input appearance
+                    searchInput.placeholder = originalPlaceholder;
+                    searchInput.style.backgroundColor = '';
+                    isSearching = false;
+                    sortData();
+                }
+            });
+        }
+
+        // Sort data
+        function sortData() {
+            const sortValue = document.getElementById('sortSelect').value;
+            
+            if (sortValue === '') {
+                renderTable();
+                return;
+            }
+
+            const [columnIndex, direction] = sortValue.includes('-desc') 
+                ? [sortValue.replace('-desc', ''), 'desc']
+                : [sortValue, 'asc'];
+
+            filteredData.sort((a, b) => {
+                const aVal = a[parseInt(columnIndex)] || '';
+                const bVal = b[parseInt(columnIndex)] || '';
+                
+                // Try to parse as numbers
+                const aNum = parseFloat(aVal);
+                const bNum = parseFloat(bVal);
+                
+                if (!isNaN(aNum) && !isNaN(bNum)) {
+                    return direction === 'asc' ? aNum - bNum : bNum - aNum;
+                }
+                
+                // String comparison
+                return direction === 'asc' 
+                    ? aVal.localeCompare(bVal)
+                    : bVal.localeCompare(aVal);
+            });
+
+            renderTable();
+        }
+
+        // Optimized table rendering with virtual scrolling concept
+        function renderTable() {
+            const tableHead = document.getElementById('tableHead');
+            const tableBody = document.getElementById('tableBody');
+            const mobileCards = document.getElementById('mobileCards');
+            
+            // Use DocumentFragment for better performance
+            const tableFragment = document.createDocumentFragment();
+            const mobileFragment = document.createDocumentFragment();
+            
+            // Clear existing content
+            tableHead.innerHTML = '';
+            tableBody.innerHTML = '';
+            mobileCards.innerHTML = '';
+
+            if (filteredData.length === 0) {
+                document.getElementById('dataContainer').classList.add('hidden');
+                document.getElementById('noResults').classList.remove('hidden');
+                updateCounts();
+                return;
+            }
+
+            document.getElementById('dataContainer').classList.remove('hidden');
+            document.getElementById('noResults').classList.add('hidden');
+
+            // Create desktop table header row (only once)
+            const headerRow = document.createElement('tr');
+            const headerHTML = headers.map(header => 
+                `<th class="px-4 py-3 text-left text-xs font-medium text-red-700 uppercase tracking-wider bg-red-50">${header}</th>`
+            ).join('');
+            headerRow.innerHTML = headerHTML;
+            tableHead.appendChild(headerRow);
+
+            // Batch process data for better performance
+            const batchSize = 50;
+            let currentBatch = 0;
+
+            function processBatch() {
+                const start = currentBatch * batchSize;
+                const end = Math.min(start + batchSize, filteredData.length);
+                
+                // Process desktop table rows
+                for (let i = start; i < end; i++) {
+                    const row = filteredData[i];
+                    const tr = document.createElement('tr');
+                    tr.className = i % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+                    
+                    const rowHTML = row.map((cell, cellIndex) => {
+                        if (cellIndex >= 4 && !isNaN(cell) && cell !== '') {
+                            const price = parseFloat(cell);
+                            const fullPrice = Math.round(price * 1000);
+                            return `<td class="px-4 py-3 text-sm text-gray-900 font-semibold text-red-600">Rp ${fullPrice.toLocaleString('id-ID')}</td>`;
+                        } else {
+                            return `<td class="px-4 py-3 text-sm text-gray-900">${cell || ''}</td>`;
+                        }
+                    }).join('');
+                    
+                    tr.innerHTML = rowHTML;
+                    tableFragment.appendChild(tr);
+
+                    // Process mobile cards
+                    const card = document.createElement('div');
+                    card.className = 'bg-white rounded-xl shadow-lg p-4 border-l-4 border-red-500 border border-red-100';
+                    card.innerHTML = `
+                        <div class="flex justify-between items-start mb-3">
+                            <h3 class="font-bold text-gray-800 text-sm leading-tight flex-1 mr-2">${row[0] || ''}</h3>
+                            <span class="bg-red-100 text-red-800 text-xs px-2 py-1 rounded-full whitespace-nowrap">${row[1] || ''}</span>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3 text-xs">
+                            <div>
+                                <span class="text-gray-500">Kota:</span>
+                                <div class="font-medium text-gray-800">${row[2] || ''}</div>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">Tipe:</span>
+                                <div class="font-medium text-gray-800">${row[3] || ''}</div>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">Weekday:</span>
+                                <div class="font-bold text-red-600">Rp ${formatPrice(row[4])}</div>
+                            </div>
+                            <div>
+                                <span class="text-gray-500">Weekend:</span>
+                                <div class="font-bold text-red-600">Rp ${formatPrice(row[5])}</div>
+                            </div>
+                        </div>
+                    `;
+                    mobileFragment.appendChild(card);
+                }
+
+                currentBatch++;
+
+                if (end < filteredData.length) {
+                    // Process next batch asynchronously
+                    requestAnimationFrame(processBatch);
+                } else {
+                    // All batches processed, append to DOM
+                    tableBody.appendChild(tableFragment);
+                    mobileCards.appendChild(mobileFragment);
+                    updateCounts();
+                }
+            }
+
+            // Start processing
+            processBatch();
+        }
+
+        // Format price function
+        function formatPrice(value) {
+            if (!value || isNaN(value)) return '0';
+            let price = parseFloat(value);
+            // Convert to full amount (multiply by 1000)
+            let fullPrice = price * 1000;
+            // Round if it's a whole number
+            if (fullPrice % 1 === 0) {
+                fullPrice = Math.round(fullPrice);
+            }
+            return fullPrice.toLocaleString('id-ID');
+        }
+
+        // Update result counts
+        function updateCounts() {
+            document.getElementById('resultCount').textContent = filteredData.length;
+            document.getElementById('totalCount').textContent = allData.length;
+        }
+
+        // Initialize the application
+        loadData();
+    </script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'9651ba2cd36116ec',t:'MTc1MzUxMDE1Ni4wMDAwMDA='};var a=document.createElement('script');a.nonce='';a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
